@@ -1,85 +1,100 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"sort"
-	"strings"
+	"log"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+var client *mongo.Client
+var collection *mongo.Collection
+
+func init() {
+	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
+	uri := "mongodb+srv://dev:sgtunnel2024@dev-gcp-tunnel.u0j98ms.mongodb.net/?retryWrites=true&w=majority&appName=dev-gcp-tunnel"
+	opts := options.Client().ApplyURI(uri).SetServerAPIOptions(serverAPI)
+	client, err := mongo.Connect(context.TODO(), opts)
+
+	if err != nil {
+		log.Panic("Failed to connect to client:", err)
+	}
+	database := client.Database("library")
+
+	// Will watch the non-time series dedicated collection
+	// Dedicated collection will only ever have one document?
+	// Constantly being replaced when ring number +1
+	collection = database.Collection("books")
+
+}
+
+func SetupChangeStream() (*mongo.ChangeStream, error) {
+	// Change stream output is typically delta fields, data that is changed
+	// Tweak pipeline to control the stream output
+	pipeline := mongo.Pipeline{}
+	streamOpts := options.ChangeStream().SetFullDocument(options.UpdateLookup)
+	return collection.Watch(context.TODO(), pipeline, streamOpts)
+}
+
+// Function triggers for both document and field level changes
+func ListenForChanges(changeStream *mongo.ChangeStream) {
+	for changeStream.Next(context.TODO()) {
+		var changeEvent bson.M
+		if err := changeStream.Decode(&changeEvent); err != nil {
+			log.Println("Error decoding change event: ", err)
+			continue
+		}
+
+		fmt.Println("--------------------")
+		fmt.Printf("Operation Type: %v\n", changeEvent["operationType"])
+
+		switch changeEvent["operationType"] {
+		case "insert", "update", "replace":
+			if fullDoc, ok := changeEvent["fullDocument"].(bson.M); ok {
+				fmt.Println("Change detected:")
+				fmt.Println("Title: ", fullDoc["title"])
+				fmt.Println("Author: ", fullDoc["authors"])
+				fmt.Println("Year: ", fullDoc["year"])
+				fmt.Println("Pages: ", fullDoc["pages"])
+			} else {
+				log.Println("Document not found in change event")
+			}
+
+		case "delete":
+			if documentKey, ok := changeEvent["documentKey"].(bson.M); ok {
+				fmt.Println("Document deleted:")
+				fmt.Printf("Document ID: %v\n", documentKey["_id"])
+			} else {
+				log.Println("Document key not found in delete event")
+			}
+
+		default:
+			fmt.Printf("Unhandled operation type: %v\n", changeEvent["operationType"])
+		}
+	}
+
+	if err := changeStream.Err(); err != nil {
+		log.Println("Failure occured during change stream: ", err)
+	}
+}
+
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run main.go [function]")
-		return
+	defer func() {
+		if err := client.Disconnect(context.TODO()); err != nil {
+			log.Println("Failed to disconnect client: ", err)
+		}
+	}()
+
+	changeStream, err := SetupChangeStream()
+	if err != nil {
+		log.Panic("Error occured before change stream: ", err)
 	}
 
-	runSpecificFunc(os.Args[1])
+	// Stream closes when cursor is explicitly closed with timeout
+	// Or invalidate event aka collection cannot be found or does not exist
+	defer changeStream.Close(context.TODO())
+	ListenForChanges(changeStream)
 }
-
-func runSpecificFunc(function string) {
-	switch function {
-	case "main":
-		variableSet()	
-	case "second":
-		library()
-	default:
-		fmt.Println("Unknown function:", function)
-	}
-}
-
-func variableSet() {
-	// shorthand inside function for var declaration
-	// var := value
-
-	var name string = "Mario"
-	age := 20
-
-	// formatted string %_ = format specifier
-	fmt.Printf("%v is %v years old \n", name, age)
-	fmt.Printf("His name in quotes is %q \n", name) 
-	fmt.Printf("Age variable type is %T \n", age)
-	fmt.Printf("His credit score in two decimal points is %0.2f \n", 255.5242433)
-
-	saved_str := fmt.Sprintf("%v is %v years old \n", name, age)
-	fmt.Println(saved_str)
-
-	// arrays and slicing
-	scores := []int{100, 75, 60}
-	scores[2] = 25
-
-	// unlike in PY JS, arr append does not overwrite OG array but returns a new one 
-	// initialize scores array to append() 
-	scores = append(scores,  85)
-	fmt.Println(scores, len(scores))
-
-	first_range := scores[0:1] 
-	second_range := scores[1:]
-	fmt.Printf("Range restricted items from scores is %v \n", first_range)
-	fmt.Printf("Item 2 onwards till end of array is %v \n", second_range)
-
-	third_range := scores[:3]
-	fmt.Printf("Start of array up to till exclusive of item 4 of the array is %v", third_range)
-}
-
-func library() {
-	// string package
-	greeting := "hello there friends!"
-	fmt.Println(strings.Contains(greeting, "hello!"))
-	fmt.Println("Equivalent of REGEX: ", strings.ReplaceAll(greeting, "hello", "hi"))
-	fmt.Println("Greeting in CAPS:", strings.ToUpper(greeting))
-	fmt.Println("Position where 'll' occurs:", strings.Index(greeting, "ll"))
-	fmt.Println("Split string by space", strings.Split(greeting, ""))
-
-	fmt.Println("Original greeting is still unchanged:", greeting)
-
-	// sort package 
-	ages := []int{45, 29, 28, 18, 15, 30}
-	sort.Ints(ages)
-	index := sort.SearchInts(ages, 30)
-	fmt.Println("Index for item 30 after sorting is", index)
-
-
-
-
-}
-

@@ -13,38 +13,41 @@ async function run() {
     await client.connect();
     const db = client.db("sample_guides");
     const collection = db.collection("planets");
-    // const indexes = collection.listIndexes().toArray();
+    const indexes = collection.listIndexes().toArray();
 
     // ---------------------------- INSERT DOCUMENTS --------------------------------- //
-    // const newDocs = [
-    //   {
-    //     name: "Exoplanet-29",
-    //     orderFromSun: 10,
-    //     hasRings: false,
-    //     mainAtmosphere: [],
-    //     surfaceTemperatureC: {
-    //       min: -20,
-    //       max: 100,
-    //       mean: 34,
-    //     },
-    //   },
-    //   {
-    //     name: "Exoplanet-30",
-    //     orderFromSun: 11,
-    //     hasRings: true,
-    //     mainAtmosphere: [],
-    //     surfaceTemperatureC: {
-    //       min: -20,
-    //       max: 100,
-    //       mean: 34,
-    //     },
-    //   },
-    // ];
+    // when numbers are defined with { $numberInt: value } instead of just value, somehow it makes it so that the documents aren't included in the query searching
+    // even though the type ends up being the same
+    // printing them out, they come out as strings though
+    const newDocs = [
+      {
+        name: "Exoplanet-29",
+        orderFromSun: 10,
+        hasRings: false,
+        mainAtmosphere: [],
+        surfaceTemperatureC: {
+          min: -20,
+          max: 100,
+          mean: 34,
+        },
+      },
+      {
+        name: "Exoplanet-30",
+        orderFromSun: 11,
+        hasRings: true,
+        mainAtmosphere: [],
+        surfaceTemperatureC: {
+          min: -20,
+          max: 100,
+          mean: 34,
+        },
+      },
+    ];
 
-    // const addDocuments = await collection.insertMany(newDocs);
-    // console.log(
-    //   `${addDocuments.insertedCount} documents successfully inserted.`
-    // );
+    const addDocuments = await collection.insertMany(newDocs);
+    console.log(
+      `${addDocuments.insertedCount} documents successfully inserted.`
+    );
 
     // ---------------------------- FIND DOCUMENTS --------------------------------- //
     const findQuery = { "surfaceTemperatureC.min": { $eq: -20 } };
@@ -52,7 +55,7 @@ async function run() {
       .find(findQuery)
       .sort({ name: 1 })
       .toArray();
-    // console.log(`Found documents: ${JSON.stringify(documents)}`);
+    console.log(`Found documents: ${JSON.stringify(documents)}`);
 
     let docIdArray = [];
 
@@ -60,12 +63,12 @@ async function run() {
       const documentId = document._id;
       docIdArray.push(documentId);
     }
-    // console.log("Array of document ids:", docIdArray);
+    console.log("Array of document ids:", docIdArray);
 
     const specificDoc = documents.find((doc) => doc.orderFromSun === 11);
     if (specificDoc) {
       const docId = specificDoc._id;
-      // console.log(`Found specific document: ${docId}`);
+      console.log(`Found specific document: ${docId}`);
     } else {
       console.log("Could not find planet at 11th position from the Sun");
     }
@@ -92,3 +95,31 @@ async function run() {
 }
 
 run().catch(console.error);
+
+// const pipeline = [
+//         {
+//             '$match': {
+//                 'bedrooms': 1,
+//                 'address.country': country,
+//                 'address.market': market,
+//                 'address.suburb': {
+//                     '$exists': 1,
+//                     '$ne': ''
+//                 },
+//                 'room_type': 'Entire home/apt'
+//             }
+//         }, {
+//             '$group': {
+//                 '_id': '$address.suburb',
+//                 'averagePrice': {
+//                     '$avg': '$price'
+//                 }
+//             }
+//         }, {
+//             '$sort': {
+//                 'averagePrice': 1
+//             }
+//         }, {
+//             '$limit': maxNumberToPrint
+//         }
+//     ];
