@@ -5,15 +5,43 @@ import (
 	"fmt"
 	"log"
 	"module/helper"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
+type FullDocument struct {
+	SaleDate time.Time `bson:"saleDate"`
+	Customer customer  `bson:"customer"`
+	Items    []item    `bson:"items"`
+}
+
+type customer struct {
+	Gender string `bson:"gender"`
+	Age    int    `bson:"age"`
+	Email  string `bson:"email"`
+}
+
+type item struct {
+	Name  string  `bson:"name"`
+	Price float64 `bson:"price"`
+}
+
+type RingSummary struct {
+	Timestamp  time.Time `bson:"timestamp"`
+	MiningInfo Mining    `bson:"mining_info"`
+}
+
+type Mining struct {
+	RingNumber int     `bson:"ring"`
+	Chainage   float64 `bson:"chainage_head"`
+}
+
 var client *mongo.Client
 
-func connectMongoDB(collectionName string) *mongo.Collection {
+func connectMongoDB(dbName, collectionName string) *mongo.Collection {
 	serverAPI := options.ServerAPI(options.ServerAPIVersion1)
 
 	uri := "mongodb+srv://dev:sgtunnel2024@dev-gcp-tunnel.u0j98ms.mongodb.net/?retryWrites=true&w=majority&appName=dev-gcp-tunnel"
@@ -28,16 +56,21 @@ func connectMongoDB(collectionName string) *mongo.Collection {
 	// Will watch the non-time series dedicated collection
 	// Dedicated collection will only ever have one document?
 	// Constantly being replaced when ring number +1 or insert - can do document level change
-	collection := client.Database("sample_supplies").Collection(collectionName)
+	collection := client.Database(dbName).Collection(collectionName)
 	return collection
 }
 
-// Function defaults to listening to document and field level changes
 func SetupChangeStream(collectionName *mongo.Collection) (*mongo.ChangeStream, error) {
-	// Change stream output is typically delta fields, data that is changed
-	// Pipeline can be tweaked to ignore some change events (only INSERT eg) or fields returned
+	// Change stream pipeline can watch for specific field changes or operation types
+	// Pipeline can also manipulate change stream output
 	pipeline := mongo.Pipeline{
-		// Disregard "delete" events from triggering a change event
+		bson.D{
+			{Key: "$match", Value: bson.D{
+				{Key: "operationType", Value: "insert"},
+			}},
+		},
+
+		// EXAMPLE 1: Exclude listening for DELETE event
 		// bson.D{
 		// 	{Key: "$match", Value: bson.D{
 		// 		{Key: "operationType", Value: bson.D{
@@ -46,14 +79,7 @@ func SetupChangeStream(collectionName *mongo.Collection) (*mongo.ChangeStream, e
 		// 	}},
 		// },
 
-		// Listen for only document insertion event
-		bson.D{
-			{Key: "$match", Value: bson.D{
-				{Key: "operationType", Value: "insert"},
-			}},
-		},
-
-		// Trigger only on specific field change
+		// EXAMPLE 2: Specific field level change
 		// bson.D{
 		// 	{Key: "$match", Value: bson.D{
 		// 		{Key: "operationType", Value: "update"},
@@ -62,15 +88,11 @@ func SetupChangeStream(collectionName *mongo.Collection) (*mongo.ChangeStream, e
 		// 		}},
 		// 	}},
 		// },
+
+		// EXAMPLE 3: Exclude embeddings field from output
 		// bson.D{
 		// 	{Key: "$project", Value: bson.D{
 		// 		{Key: "fullDocument.embeddings", Value: 0},
-		// 	}},
-		// },
-
-		// bson.D{
-		// 	{Key: "$match", Value: bson.D{
-		// 		{Key: "operationType", Value: "update"},
 		// 	}},
 		// },
 	}
@@ -79,46 +101,56 @@ func SetupChangeStream(collectionName *mongo.Collection) (*mongo.ChangeStream, e
 }
 
 func ListenForChanges(changeStream *mongo.ChangeStream) {
+	rawDataCol := connectMongoDB("sample_tbm", "tbm_sg_raw_nested")
+
 	for changeStream.Next(context.TODO()) {
 		var changeEvent bson.M
 		if err := changeStream.Decode(&changeEvent); err != nil {
 			log.Println("Error decoding change event: ", err)
+		}
+
+		// "Data capture" stage
+		var result RingSummary
+		opts := options.FindOne().SetSort(bson.D{{Key: "timestamp", Value: -1}})
+		err := rawDataCol.FindOne(context.Background(), bson.D{}, opts).Decode(&result)
+		if err != nil {
+			if err == mongo.ErrNoDocuments {
+				log.Println("No documents found in the collection")
+			} else {
+				log.Println("Error fetching latest document:", err)
+			}
 			continue
 		}
 
-		collection1 := connectMongoDB("test")
-		helper.DummyTest(changeEvent, collection1)
+		fmt.Println(result)
+		fmt.Printf("Timestamp: %v, Ring Number: %d, Chainage: %.2f\n",
+			result.Timestamp, result.MiningInfo.RingNumber, result.MiningInfo.Chainage)
 
-		if updateDesc, ok := changeEvent["updateDescription"].(bson.M); ok {
-			updatedFields := updateDesc["updatedFields"].(bson.M)
-			fmt.Printf("Updated fields: %+v\n", updatedFields)
-			// fmt.Printf("Updated fields: %+v\n", updateDesc["updatedFields"])
-
-			// // Capturing previous and current value of updated field
-			// if prevValues, ok := changeEvent["fullDocumentBeforeChange"].(bson.M); ok {
-			// 	if prevStoreLocation, exists := prevValues["storeLocation"]; exists {
-			// 		fmt.Printf("Previous storeLocation: %v\n", prevStoreLocation)
-			// 	}
-			// }
-			// if newStoreLocation, exists := updatedFields["storeLocation"]; exists {
-			// 	fmt.Printf("New storeLocation: %v\n", newStoreLocation)
-			// }
-		}
-
+		// pass into helper for data pump
 		// fmt.Println("--------------------")
-		// fmt.Printf("Operation Type: %v\n", changeEvent["operationType"])
 		// if documentKey, ok := changeEvent["documentKey"].(bson.M); ok {
-		// 	fmt.Printf("ID of document changed: %v\n", documentKey["_id"])
+		// 	fmt.Printf("CHANGED DOCUMENT ID: %v\n", documentKey["_id"])
+		// }
+		// fmt.Println("--------------------")
+
+		// var doc FullDocument
+		// bsonBytes, err := bson.Marshal(changeEvent)
+		// if err != nil {
+		// 	fmt.Println("Error marshalling primitive.M to BSON: ", err)
+		// }
+		// if err := bson.Unmarshal(bsonBytes, &doc); err == nil {
+		// 	fmt.Println(doc.Customer.Email)
+
+		// 	if len(doc.Items) > 0 {
+		// 		fmt.Println(doc.Items[0].Name)
+		// 	} else {
+		// 		fmt.Println("No items array")
+		// 	}
 		// }
 
-		// // Print out fields of changed document
-		// if fullDoc, ok := changeEvent["fullDocument"].(bson.M); ok {
-		// 	for key, value := range fullDoc {
-		// 		fmt.Printf("%s: %v\n ", key, value)
-		// 	}
-		// } else {
-		// 	log.Println("Document not found in change event")
-		// }
+		// "Data pump" stage
+		collection1 := connectMongoDB("sample_supplies", "test")
+		helper.DummyTest(changeEvent, collection1)
 	}
 
 	if err := changeStream.Err(); err != nil {
@@ -127,8 +159,7 @@ func ListenForChanges(changeStream *mongo.ChangeStream) {
 }
 
 func main() {
-	collection2 := connectMongoDB("sales")
-
+	collection2 := connectMongoDB("sample_supplies", "sales")
 	defer func() {
 		if err := client.Disconnect(context.TODO()); err != nil {
 			log.Println("Failed to disconnect client: ", err)
@@ -139,9 +170,6 @@ func main() {
 	if err != nil {
 		log.Panic("Error occured before change stream: ", err)
 	}
-
-	// Stream closes when cursor is explicitly closed with timeout
-	// Or invalidate event aka collection cannot be found or does not exist
 	defer changeStream.Close(context.TODO())
 	ListenForChanges(changeStream)
 }
